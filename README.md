@@ -114,7 +114,6 @@ See [Flet Publish Docs](https://flet.dev/docs/publish/) for details.
 
 ## FAQ
 
-- **Icon path problem**: Already auto-adapted to absolute path.
 - **Audio device unavailable**: Make sure `sounddevice` is installed and you have a working mic/speaker.
 - **Socket.IO connection failed**: Check server address/port and ensure server is running.
 

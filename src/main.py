@@ -1,12 +1,12 @@
 import flet as ft
-import aiohttp # For making HTTP requests
-import socketio # For SocketIO communication
+import aiohttp
+import socketio
 import ssl
-import inspect # For checking if a function is a coroutine
-import asyncio # For running sync code in thread
-import threading # For audio processing thread
-import numpy as np # For RMS calculation
-from config_loader import ConfigLoader # For config loading/saving
+import inspect
+import asyncio
+import threading
+import numpy as np
+from config_loader import ConfigLoader
 from color_palette import *
 try:
     import sounddevice as sd
@@ -14,7 +14,7 @@ try:
 except Exception as e:
     print(f"Sounddevice library not found or failed to import: {e}. Audio device listing will be unavailable.")
     SOUNDDEVICE_AVAILABLE = False
-    sd = None # Ensure sd is defined
+    sd = None
 import os
 
 # --- Configuration ---
@@ -588,13 +588,6 @@ async def main(page: ft.Page):
             # Standardize message format if needed, assuming server sends it in the same format as historical
             current_chat_messages_data.append(data) # Add to our internal data list
             _render_chat_messages() # Re-render the whole list (could be optimized to just append)
-            
-            # Auto-scroll logic for new messages (if auto_scroll=True on ListView isn't enough)
-            # chat_view = active_page_controls.get('chat_messages_view')
-            # if chat_view and hasattr(chat_view, 'update'): 
-            #     chat_view.update() # Ensure new control is in the list
-            #     # Delay slightly then scroll if needed? Flet ListView behavior needs testing here.
-            #     # Or rely on ListView's auto_scroll=True property.
 
     @sio_client.event
     async def voice_channel_users(data): # Users in a specific voice channel (could be due to our join or other updates)
@@ -661,14 +654,7 @@ async def main(page: ft.Page):
         user_id = data.get('user_id')
         server_reported_is_unmuted = data.get('is_unmuted') # CHANGED key from 'speaking'
         target_channel_id = data.get('channel_id')
-
         # print(f"[on_user_mic_status_updated] Received: user {user_id}, is_unmuted: {server_reported_is_unmuted}, channel: {target_channel_id}")
-
-        # current_voice_channel_id can be None if user is not in any VC or only previewing.
-        # is_actively_in_voice_channel ensures we only care about updates for the channel we are *actively* in.
-        # However, the server broadcasts to the room, so even if we are just previewing, we might get this.
-        # We should update the mic_muted status for users in `current_voice_channel_active_users`
-        # which now refers to users in the `previewing_voice_channel_id` or `current_voice_channel_id`.
 
         if target_channel_id == previewing_voice_channel_id and user_id in current_voice_channel_active_users:
             if server_reported_is_unmuted is not None: # Ensure the key was present
@@ -1014,19 +1000,6 @@ async def main(page: ft.Page):
         
         # Update icon and tooltip will be handled by _update_and_send_mute_status
         await _update_and_send_mute_status(page)
-        
-        # The following direct emit is now handled by _update_and_send_mute_status
-        # print(f"Mic muted state: {is_mic_muted}")
-        # if is_mic_muted and sio_client and sio_client.connected and current_voice_channel_id is not None:
-        #     try:
-        #         await sio_client.emit('user_speaking_status', {
-        #             'channel_id': current_voice_channel_id, 
-        #             'speaking': False 
-        #         })
-        #         print(f"Emitted user_speaking_status (false) due to mute for channel {current_voice_channel_id}")
-        #     except Exception as ex:
-        #         print(f"Error emitting user_speaking_status on mute: {ex}")
-        # if hasattr(page, 'update'): page.update() # _update_and_send_mute_status might call page.update via mute_button.update
 
     async def handle_mic_test_button_click(e):
         global is_mic_testing, selected_input_device_id, selected_output_device_id, mic_test_thread, mic_test_stop_event, mic_test_ui_update_task
@@ -1182,44 +1155,21 @@ async def main(page: ft.Page):
             print(f"Logical mute state changed to: {is_logically_muted}")
 
             if sio_client and sio_client.connected and current_voice_channel_id is not None and is_actively_in_voice_channel:
-                # When logical mute state changes, we inform the server about our "unmuted" capability.
-                # If logically muted, we send is_unmuted: False.
-                # If unmuted, the VAD callback (_audio_stream_callback) is responsible for sending is_unmuted based on actual voice activity.
-                # However, if we are just unmuting the button (and volume is > 0), 
-                # and VAD was previously silent (last_sent_speaking_status = False), 
-                # we should probably send an is_unmuted: True here to indicate we *can* speak now,
-                # even if VAD hasn't picked up sound *yet*.
-                # The server's `user_mic_status_updated` will then correctly show the mic icon as unmuted.
-                
-                # Let's simplify: if logically_muted, always send False. 
-                # If un-logically_muted, the VAD will shortly send True if speaking, or False if not.
-                # To ensure the mic icon updates quickly on unmute (even before VAD detects speech),
-                # we can send 'is_unmuted': True when is_logically_muted becomes False.
-                
                 speaking_payload_value = not is_logically_muted # True if unmuted, False if muted
-
                 try:
                     # print(f"Sending user_microphone_status: {speaking_payload_value} due to logical mute change for channel {current_voice_channel_id}")
                     await sio_client.emit('user_microphone_status', { # RENAMED event
                         'channel_id': current_voice_channel_id, 
                         'is_unmuted': speaking_payload_value # CHANGED key
                     })
-                    # `last_sent_speaking_status` is managed by VAD, so we don't directly set it here based on button mute.
-                    # If we just unmuted, and VAD was already sending 'true' (last_sent_speaking_status = true), this emit is fine.
-                    # If we just unmuted, and VAD was sending 'false', this 'is_unmuted: true' will correct the mic icon,
-                    # and VAD will continue to send 'is_unmuted: false' (if no sound) or 'is_unmuted: true' (if sound).
-
                 except Exception as ex:
                     print(f"Error emitting user_microphone_status on logical mute change: {ex}")
-        # else: print(f"Logical mute state did not change: {is_logically_muted}")
+        else: 
+            print(f"Logical mute state did not change: {is_logically_muted}")
 
     async def handle_input_volume_change(e):
         """Handles changes from the input volume slider."""
-        global page # Make sure page is accessible
-        # print(f"Volume slider changed to: {e.control.value}") # Debug
-        # Slider value is 0-100. Convert to 0.0-1.0 if needed for other calcs, but keep as 0-100 for state.
-        
-        # If volume is set to 0, enforce mute button state
+        global page
         if e.control.value == 0:
             global is_mic_muted
             if not is_mic_muted: # If not already manually muted by button
@@ -1228,7 +1178,6 @@ async def main(page: ft.Page):
         # No automatic unmute of button if volume is raised from 0 by slider;
         # user must click the unmute button if they muted via volume=0 then raised volume.
         # This prevents unmuting if they were already intentionally muted by button.
-
         await _update_and_send_mute_status(page) # Update based on new volume and existing button state
 
     active_page_controls['status_text'] = ft.Text(color=COLOR_STATUS_TEXT_MUTED) # Muted status text
@@ -1297,19 +1246,10 @@ async def main(page: ft.Page):
         cookie_jar_reinit = aiohttp.CookieJar(unsafe=True) # Assuming same cookie policy needed
         shared_aiohttp_session = aiohttp.ClientSession(connector=connector_reinit, cookie_jar=cookie_jar_reinit)
         
-        # SIO client also needs re-initialization as it uses the http_session
-        # If SIO client was connected, it should be disconnected first.
-        # For simplicity, we assume it might not be connected at this stage,
-        # or that re-creating it is acceptable.
         if sio_client:
             if sio_client.connected:
                 await sio_client.disconnect() # Gracefully disconnect if connected
             sio_client = socketio.AsyncClient(http_session=shared_aiohttp_session, logger=True, engineio_logger=True)
-            # Re-register event handlers if they are instance methods or rely on the old client instance.
-            # If they are defined as top-level or within main's scope and use the global sio_client,
-            # they should pick up the new instance automatically.
-            # Let's assume for now event handlers are defined to use the global 'sio_client'.
-
 
         if hasattr(page, 'overlay'):
             sb = ft.SnackBar(
