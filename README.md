@@ -1,4 +1,6 @@
-![ArcSpeak Icon](src/assets/icon.png)
+<div align="center">
+  <img src="src/assets/icon.png" alt="ArcSpeak Icon" width="120"/>
+</div>
 
 # ArcSpeak
 
@@ -29,46 +31,49 @@ ArcSpeak is a cross-platform voice & text chat client built with Flet, supportin
 
 ---
 
-## Requirements
+## Getting Started
 
-- Python 3.13+
-- Recommended: [Poetry](https://python-poetry.org/) or `pip`
-- Main dependencies: `flet`, `sounddevice`, `aiohttp`, `socketio`, `numpy`, etc.
+1. **Clone the project**
 
-Install dependencies:
+   ```bash
+   git clone https://github.com/DEVILENMO/ARC-Speak-Client.git
+   cd ARC-Speak-Client
+   ```
 
-```bash
-pip install -r requirements.txt
-# or
-poetry install
-```
+2. **Create and activate a Conda environment**
 
----
+   It is recommended to use [Miniforge](https://github.com/conda-forge/miniforge). Create a Python 3.13 environment named `Flet`:
 
-## How to Run
+   ```bash
+   conda create -n Flet python=3.13
+   conda activate Flet
+   ```
+   > If you installed Miniforge, the `conda` command refers to Miniforge's conda
 
-### Desktop
+   > Anaconda/Miniconda is also okay.
 
-```bash
-flet run src/main.py
-# or
-poetry run flet run src/main.py
-```
+3. **Install dependencies**
 
-### Web
+   In the project root directory, run:
 
-```bash
-flet run src/main.py --web
-# or
-poetry run flet run src/main.py --web
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### With uv
+4. **Run the app**
 
-```bash
-uv run flet run src/main.py
-uv run flet run src/main.py --web
-```
+   Still in the project root, run in desktop mode:
+
+   ```bash
+   flet run src/main.py
+   ```
+
+   For web mode:
+   ```bash
+   flet run src/main.py --web
+   ```
+
+> ⚠️ On first launch, the server config page will pop up. Please fill in the server IP and port.
 
 ---
 
@@ -113,108 +118,13 @@ See [Flet Publish Docs](https://flet.dev/docs/publish/) for details.
 
 ## License
 
-MIT License. See LICENSE file.
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
+See the [LICENSE](./LICENSE) file for details.
 
 ---
 
-[中文版说明请点这里 / For Chinese version, click here](#中文说明)
+[中文版说明请点这里 / For Chinese version, click here](./ReadMe_zh.md)
 
 ---
 
-## 中文说明
-
-![ArcSpeak 图标](src/assets/icon.png)
-
-ArcSpeak 是一个基于 Flet 的跨平台语音与文字聊天室客户端，支持桌面和 Web，具备音频设备选择、语音频道、文字频道、用户管理等功能。
-
-### 目录结构
-
-```
-.
-├── src/
-│   ├── main.py           # 主入口，Flet UI 及核心逻辑
-│   ├── config_loader.py  # 配置加载
-│   ├── color_palette.py  # 颜色常量
-│   ├── assets/
-│   │   ├── icon.ico
-│   │   ├── icon.png
-│   │   └── splash_android.png
-│   └── ui/               # （预留）UI 组件
-├── storage/
-│   └── data/
-│       └── config.json   # 本地配置
-├── requirements.txt      # 依赖
-├── pyproject.toml        # Poetry 配置（可选）
-└── README.md             # 项目说明
-```
-
-### 依赖环境
-
-- Python 3.13+
-- 推荐使用 Poetry 或 pip 安装依赖
-- 主要依赖：`flet`, `sounddevice`, `aiohttp`, `socketio`, `numpy` 等
-
-安装依赖：
-
-```bash
-pip install -r requirements.txt
-# 或
-poetry install
-```
-
-### 运行方式
-
-桌面模式：
-```bash
-flet run src/main.py
-# 或
-poetry run flet run src/main.py
-```
-Web 模式：
-```bash
-flet run src/main.py --web
-# 或
-poetry run flet run src/main.py --web
-```
-使用 uv：
-```bash
-uv run flet run src/main.py
-uv run flet run src/main.py --web
-```
-
-### 配置说明
-
-- 首次启动会自动弹出服务器配置界面，请填写服务器 IP 和端口。
-- 音频设备、输入输出、音量等可在"语音设置"中选择和保存，配置保存在 `storage/data/config.json`。
-- 图标路径自动适配，无需手动修改。
-
-### 打包与发布
-
-Windows：
-```bash
-flet build windows -v
-```
-macOS：
-```bash
-flet build macos -v
-```
-Linux：
-```bash
-flet build linux -v
-```
-Android / iOS：
-```bash
-flet build apk -v
-flet build ipa -v
-```
-详细打包说明请参考 [Flet 官方文档](https://flet.dev/docs/publish/)。
-
-### 常见问题
-
-- **图标路径问题**：已自动适配为绝对路径，无需手动修改。
-- **音频设备不可用**：请确保已安装 `sounddevice`，并有可用麦克风/扬声器。
-- **Socket.IO 连接失败**：请检查服务器地址和端口配置，确保服务端已启动。
-
-### 许可证
-
-MIT License，详见 LICENSE 文件。
+Project homepage: [https://github.com/DEVILENMO/ARC-Speak-Client.git](https://github.com/DEVILENMO/ARC-Speak-Client.git)

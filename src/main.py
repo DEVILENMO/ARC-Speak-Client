@@ -1874,7 +1874,7 @@ async def main(page: ft.Page):
         ft.Text("Login", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_ON_WHITE),
         username_field,
         password_field,
-        ft.Row([remember_me_checkbox], alignment=ft.MainAxisAlignment.CENTER),
+        ft.Row([remember_me_checkbox], alignment=ft.MainAxisAlignment.CENTER), 
         ft.Row([login_button, register_button], alignment=ft.MainAxisAlignment.CENTER),
         active_page_controls['status_text']
     ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=20, expand=True)
