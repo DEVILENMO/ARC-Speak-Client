@@ -2,9 +2,13 @@
   <img src="src/assets/icon.png" alt="ArcSpeak Icon" width="120"/>
 </div>
 
+<div align="center">
+  <a href="./ReadMe_zh.md">中文</a>
+</div>
+
 # ArcSpeak
 
-ArcSpeak is a cross-platform voice & text chat client built with Flet, supporting desktop and web, with audio device selection, voice/text channels, and user management.
+ArcSpeak is a extremely light cross-platform voice & text chat client built with Flet, supporting desktop and web, with audio device selection, voice/text channels, and user management.
 
 ---
 
@@ -120,10 +124,6 @@ See [Flet Publish Docs](https://flet.dev/docs/publish/) for details.
 
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
 See the [LICENSE](./LICENSE) file for details.
-
----
-
-[中文版说明请点这里 / For Chinese version, click here](./ReadMe_zh.md)
 
 ---
 
