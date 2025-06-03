@@ -114,4 +114,33 @@ flet build ipa -v
 
 ---
 
-项目主页：[https://github.com/DEVILENMO/ARC-Speak-Client.git](https://github.com/DEVILENMO/ARC-Speak-Client.git) 
+项目主页：[https://github.com/DEVILENMO/ARC-Speak-Client.git](https://github.com/DEVILENMO/ARC-Speak-Client.git)
+
+### 依赖安装
+
+首先安装Python依赖：
+```bash
+pip install -r requirements.txt
+```
+
+**重要音频依赖说明**：
+- `sounddevice`：音频设备管理和音频流处理
+- `numpy`：音频数据处理和数值计算
+- `scipy`：高质量音频重采样（推荐安装以获得最佳音频质量）
+
+如果 `scipy` 安装失败，程序仍可运行，但会使用简单的线性插值重采样，音质可能略有下降。
+
+### 音频质量改进
+
+本版本包含以下音频质量改进：
+1. **统一采样率**：所有音频流统一使用48kHz采样率，消除电音杂音
+2. **智能重采样**：自动将不同设备的音频重采样到标准格式
+3. **音频规范化**：防止音频削波，改善音质
+4. **音量控制集成**：实时应用音量设置，避免音频失真
+5. **格式标准化**：使用float32格式确保音频精度
+
+### 语音频道功能改进
+
+- **麦克风状态同步**：加入语音频道时，用户默认显示为未静音状态
+- **状态一致性**：确保用户的麦克风卡片状态与实际按钮状态保持同步
+- **实时状态更新**：麦克风状态变化实时反映在用户界面上 

@@ -63,15 +63,56 @@ DEFAULT_UNMUTE_VOLUME = 0.8 # Default volume when unmuting from volume=0 (0.0 to
 audio_output_stream: sd.OutputStream = None
 audio_output_buffer = asyncio.Queue()
 is_audio_playback_active: bool = False
-# It's good practice to define a fixed playback samplerate, or ensure it matches input if possible.
-# For simplicity, let's assume a common samplerate like 48000 for output.
-# The server should ideally inform clients of the audio format, or clients agree on one.
-PLAYBACK_SAMPLERATE = 48000 
+# 统一音频格式配置 - 这是解决电音问题的关键
+STANDARD_SAMPLERATE = 48000  # 统一使用48kHz采样率
+STANDARD_CHANNELS = 1        # 单声道
+STANDARD_DTYPE = np.float32  # 标准数据类型
+STANDARD_BLOCKSIZE = 960     # 20ms at 48kHz (48000 * 0.02)
 
 # --- Voice Activity Detection (Client-side timeout for card color) ---
 user_last_voice_activity_time = {} # Stores user_id: timestamp
 active_voice_activity_timers = {} # Stores user_id: asyncio.TimerHandle
 VOICE_ACTIVITY_TIMEOUT = 1.0  # Seconds before card returns to non-speaking color
+
+# --- Audio Resampling Helper ---
+try:
+    import scipy.signal
+    SCIPY_AVAILABLE = True
+except ImportError:
+    print("Warning: scipy not available. Audio resampling will use simple methods.")
+    SCIPY_AVAILABLE = False
+
+def _resample_audio(audio_data, original_rate, target_rate):
+    """重采样音频数据到目标采样率"""
+    if original_rate == target_rate:
+        return audio_data
+    
+    if SCIPY_AVAILABLE:
+        # 使用scipy进行高质量重采样
+        num_samples = int(len(audio_data) * target_rate / original_rate)
+        return scipy.signal.resample(audio_data, num_samples).astype(np.float32)
+    else:
+        # 简单的线性插值重采样（质量较低但总比不重采样好）
+        import numpy as np
+        ratio = target_rate / original_rate
+        new_length = int(len(audio_data) * ratio)
+        indices = np.linspace(0, len(audio_data) - 1, new_length)
+        return np.interp(indices, np.arange(len(audio_data)), audio_data).astype(np.float32)
+
+def _normalize_audio_chunk(audio_chunk, volume_factor=1.0):
+    """规范化音频块，应用音量并防止削波"""
+    if volume_factor <= 0:
+        return np.zeros_like(audio_chunk, dtype=np.float32)
+    
+    # 应用音量
+    normalized = audio_chunk * volume_factor
+    
+    # 防止削波
+    max_val = np.max(np.abs(normalized))
+    if max_val > 1.0:
+        normalized = normalized / max_val
+    
+    return normalized.astype(np.float32)
 
 text_channels_data = {} 
 voice_channels_data = {} 
@@ -138,17 +179,26 @@ def _run_mic_test_loop(page_instance: ft.Page, input_dev_id: int, output_dev_id:
     global current_mic_test_volume, mic_test_volume_lock
     stream = None
     try:
-        samplerate = sd.query_devices(input_dev_id, 'input')['default_samplerate']
+        # 查询输入设备的默认采样率
+        input_device_info = sd.query_devices(input_dev_id, 'input')
+        original_samplerate = int(input_device_info['default_samplerate'])
+        
+        # 使用标准采样率，如果设备支持的话
+        target_samplerate = STANDARD_SAMPLERATE if STANDARD_SAMPLERATE in [22050, 44100, 48000] else original_samplerate
+        
+        print(f"Mic test: Original device samplerate: {original_samplerate}, Using: {target_samplerate}")
+        
         # If output_dev_id is None, sounddevice will try to use the system default output.
         stream = sd.Stream(
             device=(input_dev_id, output_dev_id),
-            samplerate=samplerate,
-            channels=1, # Mono for simplicity
+            samplerate=target_samplerate,
+            channels=STANDARD_CHANNELS, # 使用标准声道数
             callback=_mic_test_audio_callback,
-            blocksize=0 # Let sounddevice choose, or specify (e.g., 1024)
+            dtype=STANDARD_DTYPE, # 指定数据类型
+            blocksize=int(target_samplerate * 0.02) # 20ms blocks
         )
         stream.start()
-        print("Mic test audio stream started.")
+        print(f"Mic test audio stream started with samplerate {target_samplerate}, channels {STANDARD_CHANNELS}, dtype {STANDARD_DTYPE}.")
         while not stop_event.is_set():
             sd.sleep(100) # Keep thread alive while stream is running, check stop event periodically
         print("Mic test stop event received.")
@@ -205,8 +255,21 @@ def _audio_stream_callback(indata, frames, time, status):
                 print(f"Error emitting speaking status (logically muted) from audio callback: {e}")
         return
 
-    rms = np.linalg.norm(indata) / np.sqrt(len(indata.flat))
-    is_currently_speaking_vad = rms > AUDIO_RMS_THRESHOLD # VAD based on RMS
+    # 获取音量滑块值并转换为0-1范围
+    volume_slider = active_page_controls.get('voice_settings_input_volume_slider')
+    volume_factor = 1.0
+    if volume_slider and hasattr(volume_slider, 'value'):
+        volume_factor = volume_slider.value / 100.0  # 滑块是0-100，转换为0-1
+    
+    # 处理音频数据
+    audio_data = indata[:, 0] if indata.ndim > 1 else indata
+    
+    # 应用音量和规范化
+    processed_audio = _normalize_audio_chunk(audio_data, volume_factor)
+    
+    # VAD计算使用处理后的音频
+    rms = np.linalg.norm(processed_audio) / np.sqrt(len(processed_audio))
+    is_currently_speaking_vad = rms > AUDIO_RMS_THRESHOLD
 
     # This 'speaking' status is about VAD activity while unmuted.
     # The server interprets this as 'is_unmuted_and_active'.
@@ -226,12 +289,16 @@ def _audio_stream_callback(indata, frames, time, status):
             print(f"Error emitting speaking status from audio callback: {e}")
 
     if is_currently_speaking_vad: # Only send audio if VAD is active
-        audio_data_list = indata[:, 0].tolist() if indata.ndim > 1 else indata.tolist()
+        # 发送处理后的音频数据
+        audio_data_list = processed_audio.tolist()
         try:
             asyncio.run_coroutine_threadsafe(
                 sio_client.emit('voice_data_stream', {
                     'channel_id': current_voice_channel_id,
-                    'audio_data': audio_data_list
+                    'audio_data': audio_data_list,
+                    'samplerate': STANDARD_SAMPLERATE,  # 告诉服务器采样率
+                    'channels': STANDARD_CHANNELS,      # 告诉服务器声道数
+                    'dtype': 'float32'                  # 告诉服务器数据类型
                 }),
                 page.loop
             )
@@ -248,7 +315,14 @@ def _run_audio_stream_loop(input_dev_id: int, stop_event: threading.Event, page_
             # Optionally notify UI, but this check should ideally happen before starting the thread
             return
 
-        samplerate = sd.query_devices(input_dev_id, 'input')['default_samplerate']
+        # 查询输入设备的默认采样率
+        input_device_info = sd.query_devices(input_dev_id, 'input')
+        original_samplerate = int(input_device_info['default_samplerate'])
+        
+        # 使用标准采样率进行录制，这样可以保证音质一致性
+        target_samplerate = STANDARD_SAMPLERATE
+        
+        print(f"Audio Stream: Device samplerate: {original_samplerate}, Using: {target_samplerate}")
         
         # For InputStream, callback should not block for long.
         # blocksize=0 lets sounddevice choose an optimal size.
@@ -257,13 +331,14 @@ def _run_audio_stream_loop(input_dev_id: int, stop_event: threading.Event, page_
         # Using a smaller blocksize (e.g. 480 frames for 10ms @ 48kHz) can reduce latency for VAD and transmission.
         stream = sd.InputStream(
             device=input_dev_id,
-            samplerate=samplerate,
-            channels=1, # Mono for simplicity
+            samplerate=target_samplerate,
+            channels=STANDARD_CHANNELS, # 使用标准声道数
             callback=_audio_stream_callback,
-            blocksize=int(samplerate * 0.02) # Approx 20ms blocks, adjust as needed
+            dtype=STANDARD_DTYPE, # 指定数据类型
+            blocksize=STANDARD_BLOCKSIZE # 使用标准块大小
         )
         stream.start()
-        print(f"Audio stream started for input device {input_dev_id} with samplerate {samplerate} and blocksize {stream.blocksize}.")
+        print(f"Audio stream started for input device {input_dev_id} with samplerate {target_samplerate}, channels {STANDARD_CHANNELS}, blocksize {stream.blocksize}.")
         # is_sending_audio = True # Set by the caller before starting the thread usually
 
         while not stop_event.is_set():
@@ -330,12 +405,17 @@ def _audio_playback_callback(outdata, frames, time, status):
     try:
         # Try to get a block of data from the buffer without waiting indefinitely
         data_block = audio_output_buffer.get_nowait()
+        
         # Ensure data_block is a NumPy array and has the correct shape for outdata
         if not isinstance(data_block, np.ndarray):
             # This shouldn't happen if we put NumPy arrays into the queue
             print(f"Warning: Data in playback buffer is not a NumPy array. Type: {type(data_block)}")
             outdata[:] = 0
             return
+
+        # 确保数据类型正确
+        if data_block.dtype != STANDARD_DTYPE:
+            data_block = data_block.astype(STANDARD_DTYPE)
 
         # Check if the retrieved block is shorter than required frames
         if len(data_block) < frames:
@@ -362,7 +442,7 @@ def _audio_playback_callback(outdata, frames, time, status):
 
 async def _start_audio_playback_stream(page_ref: ft.Page, output_device_idx: int = None):
     """Helper function to start the audio playback stream."""
-    global audio_output_stream, is_audio_playback_active, PLAYBACK_SAMPLERATE, sd, SOUNDDEVICE_AVAILABLE
+    global audio_output_stream, is_audio_playback_active, STANDARD_SAMPLERATE, sd, SOUNDDEVICE_AVAILABLE
 
     if not SOUNDDEVICE_AVAILABLE or sd is None:
         print("Cannot start audio playback: Sounddevice not available.")
@@ -397,25 +477,25 @@ async def _start_audio_playback_stream(page_ref: ft.Page, output_device_idx: int
         print("Audio output buffer cleared before starting playback stream.")
 
         # Query device for its default samplerate if using a specific device, 
-        # otherwise use PLAYBACK_SAMPLERATE (e.g. 48000)
-        # For simplicity, we'll use a fixed PLAYBACK_SAMPLERATE. 
+        # otherwise use STANDARD_SAMPLERATE (e.g. 48000)
+        # For simplicity, we'll use a fixed STANDARD_SAMPLERATE. 
         # The server should ideally send audio in a consistent format, or transcode.
         # If server sends variable samplerates, client needs to resample or reinitialize stream.
         
         # Blocksize for output can also be chosen, e.g., matching input or a fixed duration
-        # Using sd.default.blocksize or a fixed value like int(PLAYBACK_SAMPLERATE * 0.02) (20ms)
+        # Using sd.default.blocksize or a fixed value like int(STANDARD_SAMPLERATE * 0.02) (20ms)
         # If None, sounddevice will choose.
 
         audio_output_stream = sd.OutputStream(
             device=actual_output_device_id,
-            samplerate=PLAYBACK_SAMPLERATE, # Fixed playback sample rate
-            channels=1, # Mono playback
+            samplerate=STANDARD_SAMPLERATE, # Fixed playback sample rate
+            channels=STANDARD_CHANNELS, # Mono playback
             callback=_audio_playback_callback,
-            blocksize=0 # Let sounddevice choose, or set (e.g., int(PLAYBACK_SAMPLERATE * 0.02))
+            blocksize=0 # Let sounddevice choose, or set (e.g., int(STANDARD_SAMPLERATE * 0.02))
         )
         audio_output_stream.start()
         is_audio_playback_active = True
-        print(f"Audio playback stream started on device {actual_output_device_id} with samplerate {PLAYBACK_SAMPLERATE} and blocksize {audio_output_stream.blocksize}.")
+        print(f"Audio playback stream started on device {actual_output_device_id} with samplerate {STANDARD_SAMPLERATE} and blocksize {audio_output_stream.blocksize}.")
     except Exception as e:
         is_audio_playback_active = False
         print(f"Error starting audio playback stream: {e}")
@@ -663,6 +743,21 @@ async def main(page: ft.Page):
                 if current_voice_channel_active_users[user_id].get('mic_muted') != client_mic_muted_state:
                     current_voice_channel_active_users[user_id]['mic_muted'] = client_mic_muted_state
                     print(f"[DEBUG user_mic_status_updated] User {user_id} in channel {target_channel_id}, mic_muted set to: {current_voice_channel_active_users[user_id]['mic_muted']}") # DEBUG
+                    
+                    # 如果这是当前用户自己的状态更新，也要同步本地的麦克风按钮状态
+                    if current_user_info and user_id == current_user_info.get('id'):
+                        global is_logically_muted
+                        is_logically_muted = client_mic_muted_state
+                        print(f"[DEBUG] Syncing current user's local mic button state: is_logically_muted={is_logically_muted}")
+                        
+                        # 更新麦克风按钮显示
+                        mute_button = active_page_controls.get('voice_settings_mute_button')
+                        if mute_button:
+                            mute_button.icon = ft.Icons.MIC_OFF if is_logically_muted else ft.Icons.MIC
+                            mute_button.tooltip = "Unmute Microphone" if is_logically_muted else "Mute Microphone"
+                            if hasattr(mute_button, 'update'): 
+                                mute_button.update()
+                    
                     update_voice_channel_user_list_ui() # Update UI for mic icon change
         # else:
             # print(f"[on_user_mic_status_updated] Ignoring event: target_ch: {target_channel_id} vs preview_ch: {previewing_voice_channel_id}, user {user_id} in active_users: {user_id in current_voice_channel_active_users}")
@@ -748,6 +843,11 @@ async def main(page: ft.Page):
             return
 
         audio_chunk_list = data.get('audio_data')
+        # 获取音频元数据
+        chunk_samplerate = data.get('samplerate', STANDARD_SAMPLERATE)
+        chunk_channels = data.get('channels', STANDARD_CHANNELS)
+        chunk_dtype = data.get('dtype', 'float32')
+        
         if audio_chunk_list and isinstance(audio_chunk_list, list):
             try:
                 if is_actively_in_voice_channel and sender_user_id in current_voice_channel_active_users:
@@ -763,7 +863,18 @@ async def main(page: ft.Page):
                     # else:
                         # print("[VOICE_DATA_STREAM_CHUNK] Event loop not running, cannot set activity time or start timer.")
 
+                # 转换音频数据为NumPy数组
                 audio_np_array = np.array(audio_chunk_list, dtype=np.float32)
+                
+                # 如果接收到的采样率与标准采样率不同，进行重采样
+                if chunk_samplerate != STANDARD_SAMPLERATE:
+                    print(f"Resampling audio from {chunk_samplerate}Hz to {STANDARD_SAMPLERATE}Hz")
+                    audio_np_array = _resample_audio(audio_np_array, chunk_samplerate, STANDARD_SAMPLERATE)
+                
+                # 音频质量改进：规范化和降噪
+                audio_np_array = _normalize_audio_chunk(audio_np_array, volume_factor=1.0)
+                
+                # 添加到播放缓冲区
                 await audio_output_buffer.put(audio_np_array)
             except Exception as e:
                 print(f"Error processing or queuing audio chunk: {e}")
@@ -1503,7 +1614,7 @@ async def main(page: ft.Page):
 
 
     async def handle_confirm_join_voice_button_click(page_ref: ft.Page):
-        global is_actively_in_voice_channel, current_voice_channel_id, previewing_voice_channel_id, selected_input_device_id, selected_output_device_id
+        global is_actively_in_voice_channel, current_voice_channel_id, previewing_voice_channel_id, selected_input_device_id, selected_output_device_id, is_mic_muted, is_logically_muted
         
         if previewing_voice_channel_id is None:
             print("Error: Confirm join clicked but no channel is being previewed.")
@@ -1513,6 +1624,15 @@ async def main(page: ft.Page):
         is_actively_in_voice_channel = True
         current_voice_channel_id = previewing_voice_channel_id # This is now the active channel
         # previewing_voice_channel_id remains the same, as we are active in the channel we were previewing
+        
+        # 重置麦克风状态为未静音（除非音量为0）
+        volume_slider = active_page_controls.get('voice_settings_input_volume_slider')
+        current_volume = volume_slider.value if volume_slider else 100
+        
+        # 只有在音量大于0时才重置麦克风为未静音状态
+        if current_volume > 0:
+            is_mic_muted = False  # 确保麦克风按钮状态为未静音
+            print("Reset microphone to unmuted state on voice channel join")
         
         vc_name = "Unknown"
         if current_voice_channel_id and voice_channels_data.get(current_voice_channel_id):
@@ -1541,6 +1661,38 @@ async def main(page: ft.Page):
         # Start audio playback (output)
         # _start_audio_playback_stream will use selected_output_device_id or fallback to default
         await _start_audio_playback_stream(page_ref, selected_output_device_id)
+
+        # 加入语音频道后，立即发送当前的麦克风状态给服务器
+        # 这样可以确保自己和其他用户看到正确的麦克风状态
+        await _update_and_send_mute_status(page_ref)
+        
+        # 等待一小会儿让服务器处理加入事件，然后再次发送状态确保同步
+        await asyncio.sleep(0.1)
+        if sio_client and sio_client.connected and current_voice_channel_id is not None:
+            try:
+                # 根据当前逻辑静音状态发送正确的麦克风状态
+                initial_unmuted_status = not is_logically_muted
+                print(f"Sending initial microphone status: is_unmuted={initial_unmuted_status}")
+                await sio_client.emit('user_microphone_status', {
+                    'channel_id': current_voice_channel_id,
+                    'is_unmuted': initial_unmuted_status
+                })
+                
+                # 立即更新本地的麦克风按钮显示
+                mute_button = active_page_controls.get('voice_settings_mute_button')
+                if mute_button:
+                    mute_button.icon = ft.Icons.MIC_OFF if is_logically_muted else ft.Icons.MIC
+                    mute_button.tooltip = "Unmute Microphone" if is_logically_muted else "Mute Microphone"
+                    if hasattr(mute_button, 'update'): 
+                        mute_button.update()
+                        
+                # 确保当前用户在语音频道用户列表中的状态也是正确的
+                if current_user_info and current_user_info.get('id') in current_voice_channel_active_users:
+                    current_voice_channel_active_users[current_user_info.get('id')]['mic_muted'] = is_logically_muted
+                    print(f"Updated current user's mic status in voice channel user list: mic_muted={is_logically_muted}")
+                        
+            except Exception as e:
+                print(f"Error sending initial microphone status: {e}")
 
         update_voice_channel_user_list_ui() # Update UI elements (buttons, topic prefix)
         if hasattr(page_ref, 'update'): page_ref.update()
