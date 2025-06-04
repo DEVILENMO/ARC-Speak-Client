@@ -60,6 +60,9 @@ class AudioManager:
         
         # 回调函数
         self.callbacks: Dict[str, Callable] = {}
+        
+        # 页面循环，用于在回调中正确创建异步任务
+        self.page_loop = None
     
     def set_callback(self, name: str, callback: Callable):
         """设置回调函数"""
@@ -68,6 +71,11 @@ class AudioManager:
     def get_callback(self, name: str) -> Optional[Callable]:
         """获取回调函数"""
         return self.callbacks.get(name)
+    
+    def set_page_loop(self, loop):
+        """设置页面事件循环"""
+        self.page_loop = loop
+        print(f"Page loop set: {loop}")
     
     @staticmethod
     def resample_audio(audio_data, original_rate, target_rate):
@@ -199,30 +207,48 @@ class AudioManager:
         if is_speaking != self.last_sent_speaking_status:
             self.last_sent_speaking_status = is_speaking
             speaking_callback = self.get_callback('on_speaking_status_change')
-            if speaking_callback:
-                # 在新线程中调用异步回调
-                threading.Thread(target=lambda: asyncio.run(speaking_callback(is_speaking)), daemon=True).start()
+            if speaking_callback and self.page_loop:
+                try:
+                    # 使用页面循环创建异步任务
+                    asyncio.run_coroutine_threadsafe(
+                        speaking_callback(is_speaking),
+                        self.page_loop
+                    )
+                except Exception as e:
+                    print(f"Error running speaking status callback: {e}")
         
         if self.is_logically_muted:
-            # 如果被静音，发送静音数据
-            silent_data = np.zeros_like(indata, dtype=self.STANDARD_DTYPE)
-            data_to_send = silent_data
-        else:
-            # 重采样到标准采样率
-            if indata.shape[0] > 0:
-                original_samplerate = len(indata) / (frames / 48000)  # 估算原始采样率
-                if abs(original_samplerate - self.STANDARD_SAMPLERATE) > 100:  # 如果差异显著
-                    resampled = self.resample_audio(indata.flatten(), int(original_samplerate), self.STANDARD_SAMPLERATE)
-                    data_to_send = resampled.reshape(-1, 1)
-                else:
-                    data_to_send = indata
+            # 如果被静音，不发送任何数据
+            return
+        
+        # 只有当用户在说话时才发送音频数据
+        if not is_speaking:
+            # 如果用户没有说话，不发送任何数据
+            return
+        
+        # 准备音频数据
+        if indata.shape[0] > 0:
+            original_samplerate = len(indata) / (frames / 48000)  # 估算原始采样率
+            if abs(original_samplerate - self.STANDARD_SAMPLERATE) > 100:  # 如果差异显著
+                resampled = self.resample_audio(indata.flatten(), int(original_samplerate), self.STANDARD_SAMPLERATE)
+                data_to_send = resampled.reshape(-1, 1)
             else:
                 data_to_send = indata
+        else:
+            # 如果没有数据，不发送
+            return
         
         # 发送音频数据
         send_callback = self.get_callback('send_audio_data')
-        if send_callback:
-            threading.Thread(target=lambda: asyncio.run(send_callback(data_to_send)), daemon=True).start()
+        if send_callback and self.page_loop:
+            try:
+                # 使用页面循环创建异步任务
+                asyncio.run_coroutine_threadsafe(
+                    send_callback(data_to_send),
+                    self.page_loop
+                )
+            except Exception as e:
+                print(f"Error sending audio data: {e}")
     
     def run_audio_stream_loop(self, input_dev_id: int, stop_event: threading.Event, page_instance_ref: ft.Page):
         """运行音频流循环"""

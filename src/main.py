@@ -265,8 +265,113 @@ async def main(page: ft.Page):
 
     async def on_voice_data_stream_chunk(data):
         """处理接收到的语音数据块"""
-        # TODO: 实现音频播放逻辑
-        pass
+        global current_voice_channel_active_users, current_user_info, is_actively_in_voice_channel
+        global user_last_voice_activity_time, active_voice_activity_timers
+        
+        # 如果不在语音频道中，不处理音频数据
+        if not is_actively_in_voice_channel:
+            return
+        
+        sender_user_id = data.get('user_id')
+        
+        # 忽略自己发送的数据
+        if current_user_info and sender_user_id == current_user_info.get('id'):
+            return
+        
+        # 检查是否是活跃语音频道中的用户
+        if sender_user_id not in current_voice_channel_active_users:
+            return
+        
+        audio_chunk_list = data.get('audio_data')
+        chunk_samplerate = data.get('samplerate', audio_manager.STANDARD_SAMPLERATE)
+        chunk_channels = data.get('channels', audio_manager.STANDARD_CHANNELS)
+        chunk_dtype = data.get('dtype', 'float32')
+        
+        if audio_chunk_list and isinstance(audio_chunk_list, list):
+            try:
+                # 更新用户的语音活动状态
+                if sender_user_id in current_voice_channel_active_users:
+                    if not current_voice_channel_active_users[sender_user_id].get('is_card_speaking', False):
+                        current_voice_channel_active_users[sender_user_id]['is_card_speaking'] = True
+                        update_voice_channel_user_list_ui()
+                    
+                    # 更新最后语音活动时间
+                    user_last_voice_activity_time[sender_user_id] = asyncio.get_event_loop().time()
+                    
+                    # 启动或重置语音活动超时定时器
+                    await _start_voice_activity_timeout_task(sender_user_id)
+                
+                # 转换音频数据为NumPy数组
+                audio_np_array = np.array(audio_chunk_list, dtype=np.float32)
+                
+                # 如果采样率不同，进行重采样
+                if chunk_samplerate != audio_manager.STANDARD_SAMPLERATE:
+                    print(f"重采样音频从 {chunk_samplerate}Hz 到 {audio_manager.STANDARD_SAMPLERATE}Hz")
+                    audio_np_array = audio_manager.resample_audio(audio_np_array, chunk_samplerate, audio_manager.STANDARD_SAMPLERATE)
+                
+                # 规范化音频数据
+                audio_np_array = audio_manager.normalize_audio_chunk(audio_np_array, volume_factor=1.0)
+                
+                # 添加到播放缓冲区
+                await audio_manager.add_audio_chunk_to_playback_buffer(audio_np_array)
+                
+            except Exception as e:
+                print(f"处理音频数据块时出错: {e}")
+
+    # 语音活动超时处理
+    async def _handle_voice_activity_timeout(user_id):
+        """处理用户语音活动超时"""
+        global current_voice_channel_active_users, active_voice_activity_timers
+        
+        # 清除定时器引用
+        if user_id in active_voice_activity_timers:
+            del active_voice_activity_timers[user_id]
+        
+        # 检查用户是否仍在当前语音频道
+        if user_id in current_voice_channel_active_users:
+            current_voice_channel_active_users[user_id]['is_card_speaking'] = False
+            print(f"用户 {user_id} 语音活动超时，卡片变为非说话状态")
+            # 更新UI
+            update_voice_channel_user_list_ui()
+    
+    async def _start_voice_activity_timeout_task(user_id):
+        """启动或重置语音活动超时任务"""
+        global active_voice_activity_timers, VOICE_ACTIVITY_TIMEOUT
+        
+        # 取消现有定时器（如果有）
+        if user_id in active_voice_activity_timers:
+            timer_handle = active_voice_activity_timers[user_id]
+            timer_handle.cancel()
+        
+        # 创建新定时器
+        loop = asyncio.get_event_loop()
+        timer_handle = loop.call_later(
+            VOICE_ACTIVITY_TIMEOUT,
+            lambda: asyncio.create_task(_handle_voice_activity_timeout(user_id))
+        )
+        active_voice_activity_timers[user_id] = timer_handle
+        
+    # 麦克风说话状态变化回调
+    async def _update_speaking_status_async(is_speaking):
+        """处理麦克风说话状态变化"""
+        global current_user_info, current_voice_channel_active_users, is_actively_in_voice_channel
+        
+        # 只有在语音频道中时才处理说话状态
+        if not is_actively_in_voice_channel or not current_user_info:
+            return
+        
+        user_id = current_user_info.get('id')
+        if user_id in current_voice_channel_active_users:
+            # 更新本地用户卡片的说话状态
+            if current_voice_channel_active_users[user_id].get('is_card_speaking') != is_speaking:
+                current_voice_channel_active_users[user_id]['is_card_speaking'] = is_speaking
+                update_voice_channel_user_list_ui()
+                print(f"本地用户说话状态更新: is_speaking={is_speaking}")
+        
+        # 如果开始说话，也可以更新最后的语音活动时间和启动超时定时器
+        if is_speaking and user_id:
+            user_last_voice_activity_time[user_id] = asyncio.get_event_loop().time()
+            await _start_voice_activity_timeout_task(user_id)
 
     async def on_server_user_list_update(data):
         """处理服务器用户列表更新"""
@@ -280,7 +385,7 @@ async def main(page: ft.Page):
             for user in sorted_users:
                 user_row = ft.Row(
                     [
-                        ft.Icon(name=ft.Icons.CIRCLE, color=ft.colors.GREEN_ACCENT_700, size=10),
+                        ft.Icon(name=ft.Icons.CIRCLE, color=ft.Colors.GREEN_ACCENT_700, size=10),
                         ft.Text(user.get('username', 'N/A'), color=COLOR_TEXT_ON_WHITE)
                     ],
                     alignment=ft.MainAxisAlignment.START,
@@ -290,6 +395,29 @@ async def main(page: ft.Page):
             
             server_users_list_view.controls = controls
             if hasattr(server_users_list_view, 'update'): server_users_list_view.update()
+
+    # 音频数据发送处理函数
+    async def send_audio_data(audio_data):
+        """处理发送音频数据到服务器"""
+        global current_voice_channel_id, sio_client, is_actively_in_voice_channel
+        
+        if not is_actively_in_voice_channel or current_voice_channel_id is None or not sio_client or not sio_client.connected:
+            return
+        
+        try:
+            # 将NumPy数组转换为列表以便通过JSON发送
+            audio_data_list = audio_data.tolist() if isinstance(audio_data, np.ndarray) else audio_data
+            
+            # 发送到服务器
+            await sio_client.emit('voice_data_stream', {
+                'channel_id': current_voice_channel_id,
+                'audio_data': audio_data_list,
+                'samplerate': audio_manager.STANDARD_SAMPLERATE,  # 告诉服务器采样率
+                'channels': audio_manager.STANDARD_CHANNELS,      # 告诉服务器声道数
+                'dtype': 'float32'                              # 告诉服务器数据类型
+            })
+        except Exception as e:
+            print(f"发送音频数据时出错: {e}")
 
     # 定义频道点击处理函数
     def update_voice_panel_button_visibility():
@@ -565,10 +693,9 @@ async def main(page: ft.Page):
         
         # 如果之前是活跃状态，停止音频流
         if was_actively_in_voice:
-            # TODO: 实现停止音频流的功能
-            # await _stop_audio_stream_if_running()
-            # await _stop_audio_playback_stream_if_running()
-            pass
+            await audio_manager.stop_audio_stream_if_running()
+            await audio_manager.stop_audio_playback_stream_if_running()
+            print("已停止音频流")
 
         is_actively_in_voice_channel = False
         current_voice_channel_id = None  # 离开活跃状态时总是重置
@@ -619,6 +746,14 @@ async def main(page: ft.Page):
         # previewing_voice_channel_id保持不变，因为我们在活跃于正在预览的频道
         
         # 重置麦克风状态（将在音频功能实现时添加）
+        # 获取音量滑块值
+        volume_slider = ui_manager.get_control('voice_settings_input_volume_slider')
+        current_volume = volume_slider.value if volume_slider else 100
+        
+        # 只有在音量大于0时才重置麦克风为未静音状态
+        if current_volume > 0:
+            audio_manager.is_mic_muted = False
+            print("重置麦克风为未静音状态")
         
         # 获取频道名称
         vc_name = "Unknown"
@@ -641,7 +776,29 @@ async def main(page: ft.Page):
             except Exception as e:
                 print(f"发送join_voice_channel事件错误: {e}")
         
-        # 音频流处理将在音频功能实现时添加
+        # 启动音频流处理
+        if audio_manager.selected_input_device_id is not None:
+            await audio_manager.start_audio_stream(page_ref, audio_manager.selected_input_device_id)
+            print(f"已启动音频输入流，设备ID: {audio_manager.selected_input_device_id}")
+        else:
+            print("没有选择输入设备，无法启动音频流")
+            ui_manager.update_status_text("请在设置中选择输入设备以发送语音")
+        
+        # 启动音频播放流
+        await audio_manager.start_audio_playback_stream(page_ref, audio_manager.selected_output_device_id)
+        
+        # 加入语音频道后，立即发送当前麦克风状态
+        if sio_client and sio_client.connected and current_voice_channel_id is not None:
+            try:
+                # 根据当前逻辑静音状态发送麦克风状态
+                is_unmuted = not audio_manager.is_logically_muted
+                print(f"发送初始麦克风状态: is_unmuted={is_unmuted}")
+                await sio_client.emit('user_microphone_status', {
+                    'channel_id': current_voice_channel_id,
+                    'is_unmuted': is_unmuted
+                })
+            except Exception as e:
+                print(f"发送麦克风状态错误: {e}")
         
         # 更新UI元素
         update_voice_channel_user_list_ui()
@@ -672,6 +829,10 @@ async def main(page: ft.Page):
             except Exception as e:
                 print(f"发送leave_voice_channel事件错误: {e}")
 
+        # 停止音频流
+        await audio_manager.stop_audio_stream_if_running()
+        await audio_manager.stop_audio_playback_stream_if_running()
+        
         is_actively_in_voice_channel = False
         # current_voice_channel_id现在为None（不再主动加入）
         # previewing_voice_channel_id保持为channel_id_being_left（我们返回到预览状态）
@@ -696,6 +857,9 @@ async def main(page: ft.Page):
     network_manager = NetworkManager(CONFIG_FILE)
     message_manager = MessageManager()
     
+    # 设置页面事件循环供AudioManager使用
+    audio_manager.set_page_loop(asyncio.get_event_loop())
+    
     # --- 创建SSL上下文和HTTP会话 ---
     # 不再自己创建共享会话，让NetworkManager管理它
     await network_manager.create_http_session()
@@ -713,6 +877,8 @@ async def main(page: ft.Page):
     # --- 设置管理器之间的回调函数 ---
     # AudioManager回调
     audio_manager.set_callback('update_mic_test_bar', _update_mic_test_bar_callback)
+    audio_manager.set_callback('send_audio_data', send_audio_data)
+    audio_manager.set_callback('on_speaking_status_change', _update_speaking_status_async)
     
     # NetworkManager回调
     network_manager.set_callback('on_socket_connect', on_socket_connect_handler)
@@ -1260,6 +1426,9 @@ async def main(page: ft.Page):
             
         # 更新逻辑静音状态（结合按钮和音量）
         await update_logical_mute_state()
+        
+        # 如果在语音频道中，向服务器发送麦克风状态
+        await _update_and_send_mute_status(page)
     
     async def handle_input_volume_change(e):
         """处理输入音量滑块变化"""
@@ -1273,6 +1442,9 @@ async def main(page: ft.Page):
             
         # 更新逻辑静音状态
         await update_logical_mute_state()
+        
+        # 如果在语音频道中，向服务器发送麦克风状态
+        await _update_and_send_mute_status(page)
     
     async def update_logical_mute_state():
         """更新逻辑静音状态并同步UI"""
@@ -1292,8 +1464,26 @@ async def main(page: ft.Page):
         if new_logical_mute_state != audio_manager.is_logically_muted:
             audio_manager.is_logically_muted = new_logical_mute_state
             print(f"逻辑静音状态更改为: {audio_manager.is_logically_muted}")
-            
-            # TODO: 如果在语音频道中，向服务器发送麦克风状态更新
+    
+    async def _update_and_send_mute_status(page_ref: ft.Page):
+        """向服务器发送麦克风状态更新"""
+        global sio_client, current_voice_channel_id, is_actively_in_voice_channel
+        
+        # 如果不在语音频道中或Socket.IO未连接，不发送状态
+        if not is_actively_in_voice_channel or current_voice_channel_id is None or not sio_client or not sio_client.connected:
+            return
+        
+        try:
+            # 发送麦克风状态
+            is_unmuted = not audio_manager.is_logically_muted
+            print(f"向服务器发送麦克风状态: is_unmuted={is_unmuted}")
+            await sio_client.emit('user_microphone_status', {
+                'channel_id': current_voice_channel_id,
+                'is_unmuted': is_unmuted
+            })
+        except Exception as e:
+            print(f"发送麦克风状态错误: {e}")
+            ui_manager.update_status_text(f"更新麦克风状态失败: {str(e)}")
     
     # 设置麦克风相关回调
     ui_manager.set_callback('on_mic_test', handle_mic_test)
