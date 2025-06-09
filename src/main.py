@@ -1,13 +1,7 @@
 import flet as ft
-import aiohttp
 import asyncio
-import threading
 import numpy as np
 import os
-import ssl
-import socketio
-import inspect
-from typing import Dict, Any, Optional
 from config_loader import ConfigLoader
 from color_palette import *
 from audio_manager import AudioManager
